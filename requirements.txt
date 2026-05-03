@@ -1,0 +1,39 @@
+# Core dependencies
+langgraph>=0.1.0
+fastapi>=0.104.0
+mangum>=0.17.0
+sqlalchemy>=2.0.0
+pgvector>=0.2.0
+anthropic>=0.7.0
+requests>=2.31.0
+python-multipart>=0.0.6
+
+# PDF processing
+PyPDF2>=3.0.0
+reportlab>=4.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Environment and config
+python-dotenv>=1.2.2
+
+# Observability
+langsmith>=0.0.77
+prometheus-client>=0.19.0
+prometheus-fastapi-instrumentator>=6.0.0
+
+# AWS and deployment
+boto3>=1.30.0
+kubernetes>=27.3.0
+pinecone>=2.3.0
+pydantic-settings>=2.14.0
+
+# Security
+transformers>=4.35.0  # For Llama Guard (if using local model)
+
+# Development
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.7.0
