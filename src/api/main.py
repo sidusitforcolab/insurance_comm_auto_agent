@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from src.agent.graph import InsuranceUnderwritingAgent
 from src.config.settings import settings
 from src.observability.prometheus_metrics import API_ERRORS, UNDERWRITING_REQUESTS, setup_metrics
+from src.retrieval.embeddings import EmbeddingClient
 from src.retrieval.pdf_parser import process_pdf_for_embedding
 from src.retrieval.pgvector_client import PGVectorClient
 
@@ -31,6 +32,7 @@ if settings.prometheus_enabled:
 # Initialize components
 agent = InsuranceUnderwritingAgent()
 pg_client = PGVectorClient()
+embedding_client = EmbeddingClient()
 
 
 class UnderwritingRequest(BaseModel):
@@ -177,10 +179,11 @@ async def ingest_document(
                 file.filename, document_type, applicant_id, full_text
             )
 
-            # In a real implementation, we would:
-            # 1. Generate embeddings for chunks
-            # 2. Store embeddings in pgvector
-            # For now, we'll just store the document metadata
+            # Generate embeddings for chunks
+            embeddings = embedding_client.generate_embeddings(chunks)
+
+            # Store embeddings in pgvector
+            pg_client.store_embeddings(document_id, chunks, embeddings)
 
             logger.info(f"Document ingested successfully: {file.filename}")
 
@@ -191,6 +194,7 @@ async def ingest_document(
                 "document_type": document_type,
                 "applicant_id": applicant_id,
                 "chunks_processed": len(chunks),
+                "embeddings_stored": len(embeddings),
                 "structured_data": structured_data
             }
 

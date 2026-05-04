@@ -67,22 +67,25 @@ class TestPremiumCalculator:
 class TestUnderwritingAgent:
     """Test the LangGraph underwriting agent."""
 
+    @patch('src.retrieval.embeddings.EmbeddingClient')
     @patch('src.agent.graph.PGVectorClient')
-    @patch('src.agent.graph.BingSearchClient')
-    def test_agent_initialization(self, mock_bing, mock_pg):
+    @patch('src.agent.graph.WebSearchAgent')
+    def test_agent_initialization(self, mock_web_search, mock_pg, mock_embedding):
         """Test agent initialization."""
         mock_pg.return_value = Mock()
-        mock_bing.return_value = Mock()
+        mock_web_search.return_value = Mock()
+        mock_embedding.return_value = Mock()
 
         agent = InsuranceUnderwritingAgent()
 
         assert agent.pg_client is not None
-        assert agent.bing_client is not None
+        assert agent.web_search_agent is not None
         assert agent.workflow is not None
 
+    @patch('src.retrieval.embeddings.EmbeddingClient')
     @patch('src.agent.graph.PGVectorClient')
-    @patch('src.agent.graph.BingSearchClient')
-    def test_data_extraction_node(self, mock_bing, mock_pg):
+    @patch('src.agent.graph.WebSearchAgent')
+    def test_data_extraction_node(self, mock_web_search, mock_pg, mock_embedding):
         """Test the data extraction node."""
         # Mock the database client
         mock_client = Mock()
@@ -95,7 +98,8 @@ class TestUnderwritingAgent:
             }
         ]
         mock_pg.return_value = mock_client
-        mock_bing.return_value = Mock()
+        mock_web_search.return_value = Mock()
+        mock_embedding.return_value = Mock()
 
         agent = InsuranceUnderwritingAgent()
 

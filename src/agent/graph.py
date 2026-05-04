@@ -17,7 +17,7 @@ from src.premium.calculator import PremiumCalculator
 from src.retrieval.pgvector_client import PGVectorClient
 from src.security.aws_waf import AwsWafManager
 from src.security.llama_guard import LlamaGuard, validate_company_input
-from src.web_search.bing_client import BingSearchClient
+from src.web_search.web_search_agent import WebSearchAgent
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class UnderwritingState(BaseModel):
     risk_factors: Dict = {}
     document_chunks: List[Dict] = []
     web_search_results: Optional[Dict] = None
+    financial_data: Optional[Dict] = None
     premium_calculation: Optional[Dict] = None
     decision: Optional[str] = None
     reasoning: Optional[str] = None
@@ -49,7 +50,9 @@ class InsuranceUnderwritingAgent:
     def __init__(self):
         """Initialize the underwriting agent."""
         self.pg_client = PGVectorClient()
-        self.bing_client = BingSearchClient()
+        self.embedding_client = EmbeddingClient()
+        self.web_search_agent = WebSearchAgent()
+        self.financial_data_agent = FinancialDataAgent()
         self.premium_calculator = PremiumCalculator()
         self.security_guard = LlamaGuard()
         self.pinecone_client = PineconeClient(settings.pinecone_api_key, settings.pinecone_environment)
@@ -70,6 +73,7 @@ class InsuranceUnderwritingAgent:
         # Add nodes
         workflow.add_node("data_extraction", self._extract_data)
         workflow.add_node("web_search", self._perform_web_search)
+        workflow.add_node("financial_data", self._get_financial_data)
         workflow.add_node("risk_assessment", self._assess_risk)
         workflow.add_node("premium_calculation", self._calculate_premium)
         workflow.add_node("llm_reasoning", self._llm_reasoning)
@@ -81,7 +85,8 @@ class InsuranceUnderwritingAgent:
 
         # Add edges with conditional logic
         workflow.add_edge("data_extraction", "web_search")
-        workflow.add_edge("web_search", "risk_assessment")
+        workflow.add_edge("web_search", "financial_data")
+        workflow.add_edge("financial_data", "risk_assessment")
         workflow.add_edge("risk_assessment", "premium_calculation")
         workflow.add_edge("premium_calculation", "llm_reasoning")
         workflow.add_edge("llm_reasoning", "decision")
@@ -100,38 +105,34 @@ class InsuranceUnderwritingAgent:
                 state.errors.append("No documents found for applicant")
                 return state
 
-            # Search for relevant document chunks
-            # In a real implementation, we'd embed the query and search
-            # For now, we'll use a simple text search
-            all_chunks = []
-            for doc in documents:
-                # Simple keyword-based retrieval (would be vector search in production)
-                content = doc['content']
-                chunks = self._chunk_text_simple(content)
+            # Search for relevant document chunks using vector similarity
+            query = f"insurance underwriting data for {state.company_name or 'company'} commercial auto policy"
+            query_embedding = self.embedding_client.generate_query_embedding(query)
 
-                for i, chunk in enumerate(chunks):
-                    all_chunks.append({
-                        "text": chunk,
-                        "document_type": doc['document_type'],
-                        "filename": doc['filename'],
-                        "chunk_index": i
-                    })
+            # Search for similar documents in pgvector
+            search_results = self.pg_client.search_similar_documents(
+                query_embedding=query_embedding,
+                applicant_id=state.applicant_id,
+                top_k=10
+            )
 
-            state.document_chunks = all_chunks[:10]  # Limit to top 10 chunks
+            # Format results for state
+            state.document_chunks = []
+            for result in search_results:
+                state.document_chunks.append({
+                    "text": result["chunk_text"],
+                    "document_type": result["document_type"],
+                    "filename": result["filename"],
+                    "similarity_score": result["similarity_score"],
+                    "metadata": result["metadata"]
+                })
 
-            # Optional Pinecone-based retrieval placeholder
-            if self.pinecone_client.index:
-                try:
-                    _ = self.pinecone_client.query([0.0] * 1536, top_k=1)
-                except Exception:
-                    pass
-
-            # Assess retrieval quality with Ragas placeholder
-            self.ragas_client.evaluate_retrieval(state.applicant_id, state.document_chunks)
+            # Assess retrieval quality with Ragas
+            self.ragas_client.evaluate_retrieval(query, state.document_chunks)
 
             # Extract structured data from chunks
-            vehicle_info = self._extract_vehicle_info(all_chunks)
-            risk_factors = self._extract_risk_factors(all_chunks)
+            vehicle_info = self._extract_vehicle_info(state.document_chunks)
+            risk_factors = self._extract_risk_factors(state.document_chunks)
 
             state.vehicle_info = vehicle_info
             state.risk_factors = risk_factors
@@ -161,10 +162,10 @@ class InsuranceUnderwritingAgent:
             logger.info(f"Performing web search for company: {state.company_name}")
 
             # Search for company information
-            search_results = self.bing_client.search_company_info(state.company_name)
+            search_results = self.web_search_agent.search_company_info(state.company_name)
 
             # Also check for risk indicators
-            risk_results = self.bing_client.search_risk_indicators(state.company_name)
+            risk_results = self.web_search_agent.search_risk_indicators(state.company_name)
             tawily_results = self.tawily_client.fetch_company_risk(state.company_name)
 
             state.web_search_results = {
@@ -178,6 +179,28 @@ class InsuranceUnderwritingAgent:
         except Exception as e:
             logger.error(f"Web search failed: {e}")
             state.errors.append(f"Web search error: {str(e)}")
+
+        return state
+
+    def _get_financial_data(self, state: UnderwritingState) -> UnderwritingState:
+        """Retrieve financial data for the company."""
+        try:
+            if not state.company_name:
+                logger.info("No company name provided, skipping financial data retrieval")
+                return state
+
+            logger.info(f"Retrieving financial data for company: {state.company_name}")
+
+            # Get financial data using the financial data agent
+            financial_results = self.financial_data_agent.get_company_financials(state.company_name)
+
+            state.financial_data = financial_results
+
+            logger.info(f"Financial data retrieval completed, data available: {financial_results.get('available', False)}")
+
+        except Exception as e:
+            logger.error(f"Financial data retrieval failed: {e}")
+            state.errors.append(f"Financial data error: {str(e)}")
 
         return state
 

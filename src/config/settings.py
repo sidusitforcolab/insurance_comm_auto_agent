@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Bing Search API
     bing_api_key: Optional[str] = None
 
+    # DnB API
+    dnb_api_key: Optional[str] = None
+
     # External tool integrations
     pinecone_api_key: Optional[str] = None
     pinecone_environment: Optional[str] = None

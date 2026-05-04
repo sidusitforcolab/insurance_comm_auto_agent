@@ -1,4 +1,5 @@
-# Core dependencies
+# Database
+psycopg2-binary>=2.9.0
 langgraph>=0.1.0
 fastapi>=0.104.0
 mangum>=0.17.0
@@ -11,6 +12,9 @@ python-multipart>=0.0.6
 # PDF processing
 PyPDF2>=3.0.0
 reportlab>=4.0.0
+
+# Embeddings and ML
+sentence-transformers>=2.2.0
 
 # Testing
 pytest>=7.4.0
