@@ -44,6 +44,9 @@ class UnderwritingState(BaseModel):
     decision: Optional[str] = None
     reasoning: Optional[str] = None
     errors: List[str] = []
+    extraction_attempts: int = 0
+    max_extraction_attempts: int = 2
+    financial_retry_attempted: bool = False
 
 
 class InsuranceUnderwritingAgent:
@@ -85,13 +88,55 @@ class InsuranceUnderwritingAgent:
         workflow.set_entry_point("data_extraction")
         workflow.set_finish_point("decision")
 
-        # Add edges with conditional logic
-        workflow.add_edge("data_extraction", "web_search")
+        # Add edges with conditional logic and loops
+        # Data extraction → check completeness, retry with web search if needed
+        workflow.add_conditional_edges(
+            "data_extraction",
+            self._check_data_completeness,
+            {
+                "web_search": "web_search",
+                "continue": "financial_data"
+            }
+        )
+
+        # Web search → financial data (always proceed)
         workflow.add_edge("web_search", "financial_data")
-        workflow.add_edge("financial_data", "risk_assessment")
+
+        # Financial data → check if available, retry via web search if failed
+        workflow.add_conditional_edges(
+            "financial_data",
+            self._handle_financial_failure,
+            {
+                "web_search": "web_search",
+                "continue": "risk_assessment"
+            }
+        )
+
+        # Risk assessment → premium calculation (always proceed)
         workflow.add_edge("risk_assessment", "premium_calculation")
-        workflow.add_edge("premium_calculation", "llm_reasoning")
-        workflow.add_edge("llm_reasoning", "decision")
+
+        # Premium calculation → validate and check outliers, loop back to risk if needed
+        workflow.add_conditional_edges(
+            "premium_calculation",
+            self._validate_premium,
+            {
+                "risk_assessment": "risk_assessment",
+                "continue": "llm_reasoning"
+            }
+        )
+
+        # LLM reasoning → validate reasoning against premium, loop back if contradiction
+        workflow.add_conditional_edges(
+            "llm_reasoning",
+            self._validate_llm_reasoning,
+            {
+                "premium_calculation": "premium_calculation",
+                "continue": "decision"
+            }
+        )
+
+        # Decision is the finish point
+        workflow.add_edge("decision", workflow.END)
 
         return workflow.compile()
 
@@ -308,6 +353,81 @@ class InsuranceUnderwritingAgent:
 
         return state
 
+    def _check_data_completeness(self, state: UnderwritingState) -> str:
+        """Check if critical data fields are populated; loop back to web search if incomplete."""
+        missing_fields = []
+
+        if not state.vehicle_info or not state.vehicle_info.get("type"):
+            missing_fields.append("vehicle_type")
+        if not state.company_name or len(state.company_name.strip()) < 2:
+            missing_fields.append("company_name")
+        if not state.document_chunks or len(state.document_chunks) == 0:
+            missing_fields.append("document_chunks")
+
+        # Retry with web search if data is incomplete and we haven't exceeded max attempts
+        if missing_fields and state.extraction_attempts < state.max_extraction_attempts:
+            state.extraction_attempts += 1
+            logger.warning(f"Missing critical fields: {missing_fields}. Retrying with web search (attempt {state.extraction_attempts})")
+            return "web_search"
+
+        logger.info(f"Data extraction complete with {len(state.document_chunks)} chunks")
+        return "continue"
+
+    def _handle_financial_failure(self, state: UnderwritingState) -> str:
+        """Check if financial data retrieval succeeded; fallback to web search if failed."""
+        if not state.financial_data or not state.financial_data.get("available", False):
+            if not state.financial_retry_attempted:
+                state.financial_retry_attempted = True
+                logger.warning(f"Financial data retrieval failed for {state.company_name}. Attempting web search fallback.")
+                return "web_search"
+            else:
+                logger.info("Financial data unavailable after retry; proceeding with risk assessment.")
+        return "continue"
+
+    def _validate_premium(self, state: UnderwritingState) -> str:
+        """Validate premium calculation; loop back to risk assessment if outlier detected."""
+        if not state.premium_calculation:
+            logger.warning("Premium calculation failed.")
+            return "continue"
+
+        premium = state.premium_calculation.get("final_premium", 0)
+
+        # Outlier check: if premium is unusually high or low, re-assess risk
+        if premium > 5000:
+            logger.warning(f"Premium outlier detected: ${premium} is very high. Re-assessing risk factors.")
+            state.errors.append(f"Premium outlier (high): ${premium} - re-assessed risk")
+            return "risk_assessment"
+        elif premium < 300:
+            logger.warning(f"Premium outlier detected: ${premium} is below minimum. Re-assessing risk factors.")
+            state.errors.append(f"Premium outlier (low): ${premium} - re-assessed risk")
+            return "risk_assessment"
+
+        logger.info(f"Premium validation passed: ${premium}")
+        return "continue"
+
+    def _validate_llm_reasoning(self, state: UnderwritingState) -> str:
+        """Validate LLM reasoning against premium calculation; loop back if contradiction."""
+        if not state.premium_calculation:
+            logger.info("No premium calculation for LLM reasoning validation.")
+            return "continue"
+
+        llm_insight = state.premium_calculation.get("llm_reasoning", "")
+        final_premium = state.premium_calculation.get("final_premium", 0)
+
+        # Check for contradictions between LLM assessment and premium
+        if llm_insight:
+            insight_lower = llm_insight.lower()
+            is_high_risk = "high risk" in insight_lower or "excessive risk" in insight_lower
+            is_low_premium = final_premium < 1000
+
+            if is_high_risk and is_low_premium:
+                logger.warning(f"Contradiction: LLM marked high risk but premium is ${final_premium}. Recalculating premium.")
+                state.errors.append(f"LLM/Premium contradiction detected - recalculated")
+                return "premium_calculation"
+
+        logger.info(f"LLM reasoning validation passed.")
+        return "continue"
+
     def _make_decision(self, state: UnderwritingState) -> UnderwritingState:
         """Make final underwriting decision."""
         try:
@@ -493,7 +613,7 @@ class InsuranceUnderwritingAgent:
                     "cached": True
                 }
 
-            # Initialize state
+            # Initialize state with tracking fields for loops
             initial_state = UnderwritingState(
                 applicant_id=applicant_id,
                 company_name=company_name,
@@ -503,7 +623,10 @@ class InsuranceUnderwritingAgent:
                 previous_claims=previous_claims or 0,
                 serious_accidents=serious_accidents or 0,
                 safety_program=safety_program if safety_program is not None else False,
-                annual_mileage=annual_mileage
+                annual_mileage=annual_mileage,
+                extraction_attempts=0,
+                max_extraction_attempts=2,
+                financial_retry_attempted=False
             )
 
             # Evaluate WAF recommendations and trace the request
