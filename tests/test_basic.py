@@ -113,6 +113,48 @@ class TestUnderwritingAgent:
         assert isinstance(result_state.risk_factors, dict)
 
 
+class TestHybridSearch:
+    """Test the hybrid search pipeline in the retrieval client."""
+
+    @patch('src.retrieval.pgvector_client.CrossEncoder')
+    @patch('src.retrieval.pgvector_client.PGVectorClient.search_similar_documents')
+    @patch('src.retrieval.pgvector_client.PGVectorClient.bm25_search')
+    def test_hybrid_search_reranks(self, mock_bm25, mock_vector, mock_cross):
+        mock_bm25.return_value = [
+            {
+                "chunk_text": "Commercial auto claim details for vendor fleet",
+                "document_type": "loss_run",
+                "filename": "loss.pdf",
+                "metadata": {},
+                "bm25_score": 1.0
+            }
+        ]
+        mock_vector.return_value = [
+            {
+                "chunk_text": "Commercial auto claim details for vendor fleet",
+                "document_type": "loss_run",
+                "filename": "loss.pdf",
+                "metadata": {},
+                "similarity_score": 0.92
+            }
+        ]
+        mock_cross.return_value.predict.return_value = [4.8]
+
+        client = PGVectorClient()
+        client.cross_encoder = mock_cross.return_value
+
+        results = client.hybrid_search(
+            query="commercial auto insurance underwriting",
+            query_embedding=[0.01] * 384,
+            applicant_id="APPLICANT1",
+            top_k=1
+        )
+
+        assert len(results) == 1
+        assert results[0]["chunk_text"] == "Commercial auto claim details for vendor fleet"
+        assert results[0]["cross_score"] == 4.8
+
+
 if __name__ == "__main__":
     # Run basic tests
     calculator = PremiumCalculator()

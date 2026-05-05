@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
     chunk_text TEXT NOT NULL,
-    embedding vector(1536), -- Dimension for text-embedding-3-small
+    embedding vector(384), -- Dimension for SentenceTransformers all-MiniLM-L6-v2
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

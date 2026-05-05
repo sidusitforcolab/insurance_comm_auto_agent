@@ -1,7 +1,8 @@
 """PostgreSQL + pgvector client for document embeddings."""
 import logging
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from sentence_transformers import CrossEncoder
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -13,11 +14,18 @@ logger = logging.getLogger(__name__)
 class PGVectorClient:
     """Client for PostgreSQL with pgvector extension."""
 
-    def __init__(self, database_url: Optional[str] = None):
+    def __init__(self, database_url: Optional[str] = None,
+                 cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
         """Initialize the pgvector client."""
         self.database_url = database_url or settings.database_url
         self.engine = create_engine(self.database_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        try:
+            self.cross_encoder = CrossEncoder(cross_encoder_model)
+            logger.info(f"Loaded cross-encoder model: {cross_encoder_model}")
+        except Exception as e:
+            logger.warning(f"Unable to load cross-encoder model {cross_encoder_model}: {e}")
+            self.cross_encoder = None
 
     def store_document(self, filename: str, document_type: str, applicant_id: str,
                       content: str) -> int:
@@ -77,6 +85,148 @@ class PGVectorClient:
                 session.rollback()
                 logger.error(f"Failed to store embeddings: {e}")
                 raise
+
+    def bm25_search(self, query: str,
+                    applicant_id: Optional[str] = None,
+                    document_types: Optional[List[str]] = None,
+                    top_k: int = 20) -> List[dict]:
+        """Search for document chunks using PostgreSQL full-text ranking (BM25-style)."""
+        with self.SessionLocal() as session:
+            try:
+                query_parts = [
+                    "SELECT e.chunk_text, e.metadata, d.document_type, d.applicant_id, d.filename,",
+                    "ts_rank_cd(to_tsvector('english', e.chunk_text), plainto_tsquery('english', :query)) AS bm25_score",
+                    "FROM embeddings e",
+                    "JOIN documents d ON e.document_id = d.id",
+                    "WHERE to_tsvector('english', e.chunk_text) @@ plainto_tsquery('english', :query)"
+                ]
+
+                params = {"query": query}
+                if applicant_id:
+                    query_parts.append("AND d.applicant_id = :applicant_id")
+                    params["applicant_id"] = applicant_id
+
+                if document_types:
+                    placeholders = [f":doc_type_{i}" for i in range(len(document_types))]
+                    query_parts.append(f"AND d.document_type IN ({', '.join(placeholders)})")
+                    for i, doc_type in enumerate(document_types):
+                        params[f"doc_type_{i}"] = doc_type
+
+                query_parts.extend([
+                    "ORDER BY bm25_score DESC",
+                    "LIMIT :top_k"
+                ])
+                params["top_k"] = top_k
+
+                full_query = " ".join(query_parts)
+                result = session.execute(text(full_query), params)
+
+                results = []
+                for row in result:
+                    results.append({
+                        "chunk_text": row.chunk_text,
+                        "metadata": row.metadata,
+                        "document_type": row.document_type,
+                        "applicant_id": row.applicant_id,
+                        "filename": row.filename,
+                        "bm25_score": float(row.bm25_score)
+                    })
+
+                logger.info(f"BM25 search found {len(results)} chunks for query '{query}'")
+                return results
+
+            except Exception as e:
+                logger.error(f"Failed BM25 search: {e}")
+                raise
+
+    def _chunk_key(self, item: Dict[str, Any]) -> tuple:
+        return (
+            item.get("chunk_text"),
+            item.get("document_type"),
+            item.get("filename")
+        )
+
+    def _reciprocal_rank_fusion(self,
+                                bm25_results: List[dict],
+                                vector_results: List[dict],
+                                k: int = 60) -> List[dict]:
+        """Fuse BM25 and vector rankings using reciprocal rank fusion."""
+        fused = {}
+
+        def add_ranked_list(results: List[dict], key_name: str):
+            for rank, item in enumerate(results, start=1):
+                candidate_key = self._chunk_key(item)
+                if candidate_key not in fused:
+                    fused[candidate_key] = {
+                        **item,
+                        "rrf_score": 0.0,
+                        "bm25_score": item.get("bm25_score", 0.0),
+                        "similarity_score": item.get("similarity_score", 0.0)
+                    }
+                fused[candidate_key]["rrf_score"] += 1.0 / (k + rank)
+                fused[candidate_key][key_name] = rank
+
+        add_ranked_list(bm25_results, "bm25_rank")
+        add_ranked_list(vector_results, "vector_rank")
+
+        fused_results = sorted(
+            fused.values(),
+            key=lambda item: item["rrf_score"],
+            reverse=True
+        )
+
+        logger.info(f"RRF fused {len(fused_results)} candidate chunks")
+        return fused_results
+
+    def cross_encoder_rerank(self,
+                              query: str,
+                              candidates: List[dict],
+                              top_n: int = 10) -> List[dict]:
+        """Re-rank candidate chunks using a cross-encoder model."""
+        if not candidates or self.cross_encoder is None:
+            return candidates[:top_n]
+
+        pairs = [(query, candidate["chunk_text"]) for candidate in candidates]
+        try:
+            scores = self.cross_encoder.predict(pairs)
+            for candidate, score in zip(candidates, scores):
+                candidate["cross_score"] = float(score)
+
+            reranked = sorted(candidates, key=lambda item: item["cross_score"], reverse=True)
+            logger.info(f"Cross-encoder reranked top {min(len(reranked), top_n)} candidates")
+            return reranked[:top_n]
+        except Exception as e:
+            logger.warning(f"Cross-encoder rerank failed: {e}")
+            return candidates[:top_n]
+
+    def hybrid_search(self,
+                      query: str,
+                      query_embedding: List[float],
+                      applicant_id: Optional[str] = None,
+                      document_types: Optional[List[str]] = None,
+                      top_k: int = 10,
+                      bm25_top_k: int = 40,
+                      semantic_top_k: int = 40,
+                      cross_top_k: int = 10) -> List[dict]:
+        """Execute a hybrid retrieval pipeline using BM25, bi-encoder similarity, RRF, and cross-encoder re-ranking."""
+        bm25_results = self.bm25_search(
+            query=query,
+            applicant_id=applicant_id,
+            document_types=document_types,
+            top_k=bm25_top_k
+        )
+
+        vector_results = self.search_similar_documents(
+            query_embedding=query_embedding,
+            applicant_id=applicant_id,
+            document_types=document_types,
+            top_k=semantic_top_k
+        )
+
+        fused_results = self._reciprocal_rank_fusion(bm25_results, vector_results)
+        reranked_results = self.cross_encoder_rerank(query, fused_results, top_n=cross_top_k)
+
+        return reranked_results[:top_k]
 
     def search_similar_documents(self, query_embedding: List[float],
                                applicant_id: Optional[str] = None,

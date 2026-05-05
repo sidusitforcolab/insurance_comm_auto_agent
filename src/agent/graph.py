@@ -14,10 +14,12 @@ from src.observability.arize_phoenix import ArizePhoenixClient
 from src.observability.langsmith_integration import LangSmithTracer
 from src.observability.ragas_client import RagasClient
 from src.premium.calculator import PremiumCalculator
+from src.retrieval.embeddings import EmbeddingClient
 from src.retrieval.pgvector_client import PGVectorClient
 from src.security.aws_waf import AwsWafManager
 from src.security.llama_guard import LlamaGuard, validate_company_input
 from src.web_search.web_search_agent import WebSearchAgent
+from src.financial.financial_data_agent import FinancialDataAgent
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +107,13 @@ class InsuranceUnderwritingAgent:
                 state.errors.append("No documents found for applicant")
                 return state
 
-            # Search for relevant document chunks using vector similarity
+            # Search for relevant document chunks using hybrid retrieval
             query = f"insurance underwriting data for {state.company_name or 'company'} commercial auto policy"
             query_embedding = self.embedding_client.generate_query_embedding(query)
 
-            # Search for similar documents in pgvector
-            search_results = self.pg_client.search_similar_documents(
+            # Use hybrid retrieval pipeline with BM25 + bi-encoder + RRF + cross-encoder rerank
+            search_results = self.pg_client.hybrid_search(
+                query=query,
                 query_embedding=query_embedding,
                 applicant_id=state.applicant_id,
                 top_k=10
@@ -123,7 +126,7 @@ class InsuranceUnderwritingAgent:
                     "text": result["chunk_text"],
                     "document_type": result["document_type"],
                     "filename": result["filename"],
-                    "similarity_score": result["similarity_score"],
+                    "score": result.get("cross_score") or result.get("similarity_score") or result.get("bm25_score"),
                     "metadata": result["metadata"]
                 })
 
@@ -137,7 +140,7 @@ class InsuranceUnderwritingAgent:
             state.vehicle_info = vehicle_info
             state.risk_factors = risk_factors
 
-            logger.info(f"Extracted {len(all_chunks)} chunks, vehicle info: {vehicle_info.keys()}")
+            logger.info(f"Extracted {len(state.document_chunks)} chunks, vehicle info: {vehicle_info.keys()}")
 
         except Exception as e:
             logger.error(f"Data extraction failed: {e}")
