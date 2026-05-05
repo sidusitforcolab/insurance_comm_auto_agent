@@ -7,6 +7,7 @@ An AI-powered agent for commercial auto insurance underwriting using LangGraph, 
 - **Document Processing**: Ingest and analyze MVR, loss run, inspection reports, and policy documents
 - **Risk Assessment**: Rules-based + LLM reasoning for premium calculation
 - **Web Search Integration**: Bing search for company background and risk indicators
+- **Hybrid Search**: BM25 + pgvector bi-encoder similarity, reciprocal rank fusion, and cross-encoder reranking
 - **Vector Search**: PostgreSQL + pgvector and optional Pinecone retrieval
 - **Security**: Llama Guard input validation and AWS WAF guidance
 - **Deployment Options**: AWS Lambda or EKS + FastAPI
@@ -22,6 +23,7 @@ This project includes integration points for the following tools:
 - **AWS SageMaker** for model hosting and inference
 - **AWS WAF** for web application firewall recommendations
 - **Pinecone** for optional vector storage and search
+- **SentenceTransformers** for bi-encoder embeddings and cross-encoder reranking
 - **Aurora/PostgreSQL + pgvector** for vector DB persistence
 - **Bing** and **Tawily** for external business and risk data enrichment
 - **LangSmith** for execution tracing
@@ -34,11 +36,11 @@ This project includes integration points for the following tools:
 ```
 PDF Upload → LangGraph Workflow → Premium Decision
     ↓              ↓
-Vector Store    Web Search
+Hybrid Retrieval   Web Search
     ↓              ↓
-PostgreSQL    Bing API
+BM25 + pgvector   Bing API
     ↓              ↓
-pgvector      Risk Analysis
+RRF + cross-encoder   Risk Analysis
 ```
 
 ## Quick Start

@@ -112,6 +112,15 @@ The ingestion process does the following:
 3. Generate embeddings for each chunk.
 4. Store the embeddings in PostgreSQL using `pgvector`.
 
+The system now also includes a hybrid evidence retrieval pipeline that combines:
+
+- **BM25 full-text ranking** for keyword coverage,
+- **bi-encoder semantic similarity** via pgvector,
+- **reciprocal rank fusion (RRF)** to blend lexical and semantic rankings,
+- **cross-encoder reranking** for final precision.
+
+The final retrieval query uses both vector similarity and dense ranking with pgvector, and the top candidates are reranked with a cross-encoder to ensure the most relevant evidence surfaces to the underwriting workflow.
+
 The vector search query is then:
 
 ```sql
@@ -268,6 +277,7 @@ Deployability:
 Key production controls are in place:
 - input validation via `Llama Guard`
 - AWS WAF guidance for API security
+- hybrid retrieval evidence ranking via BM25, RRF, and cross-encoder steps
 - environment-based configuration via `pydantic-settings`
 
 ### 2.11 Closing Summary (1 minute)
