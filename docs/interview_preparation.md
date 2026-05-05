@@ -301,12 +301,27 @@ If you want to highlight one thing, emphasize that the system is built for comme
 ```mermaid
 graph TD
     A[Document Upload] --> B[Data Extraction Node]
-    B --> C[Web Search Node]
-    C --> D[Financial Data Node]
-    D --> E[Risk Assessment Node]
+    
+    B --> |Check Completeness| B_Check{Data Complete?}
+    B_Check -->|Missing Fields| C[Web Search Node]
+    B_Check -->|Complete| D[Financial Data Node]
+    
+    C --> |Enrich Data| B
+    C --> D
+    
+    D --> |Check Availability| D_Check{Data Available?}
+    D_Check -->|Failed| C
+    D_Check -->|Available| E[Risk Assessment Node]
+    
     E --> F[Premium Calculation Node]
-    F --> G[LLM Reasoning Node]
-    G --> H[Decision Node]
+    
+    F --> |Validate Premium| F_Check{Outlier Detected?}
+    F_Check -->|High/Low Risk| E
+    F_Check -->|Valid| G[LLM Reasoning Node]
+    
+    G --> |Check Reasoning| G_Check{Contradiction?}
+    G_Check -->|High Risk + Low Premium| F
+    G_Check -->|Consistent| H[Decision Node]
 
     subgraph "Data Sources"
         I[PostgreSQL + pgvector]
@@ -323,10 +338,10 @@ graph TD
     D --> M
 
     subgraph "Agent Capabilities"
-        N[RAG Retrieval]
+        N[Hybrid Retrieval]
         O[Multi-API Selection]
         P[Rules + LLM Reasoning]
-        Q[State Management]
+        Q[State Management + Loops]
     end
 
     B -.-> N
@@ -341,6 +356,10 @@ graph TD
     style O fill:#fff3e0
     style P fill:#fff3e0
     style Q fill:#fff3e0
+    style B_Check fill:#ffe0e0
+    style D_Check fill:#ffe0e0
+    style F_Check fill:#ffe0e0
+    style G_Check fill:#ffe0e0
 ```
 
 ---
