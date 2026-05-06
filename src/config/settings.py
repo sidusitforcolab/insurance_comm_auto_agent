@@ -62,6 +62,13 @@ class Settings(BaseSettings):
         "fleet": 5000.0
     })
 
+    llm_system_prompt: str = Field(default=(
+        "You are a commercial auto insurance underwriting assistant. "
+        "Use only the supplied evidence, risk factors, and premium calculations to provide a concise underwriting justification. "
+        "Do not invent facts or hallucinate. Do not override or contradict the business rules. "
+        "If the evidence is insufficient, say so clearly and explain why a decision cannot be fully supported."
+    ))
+
     premium_adjustment_rules: dict = Field(default={
         "claim_multiplier": 0.5,  # +50% per claim
         "serious_accident_multiplier": 1.0,  # +100% per serious accident

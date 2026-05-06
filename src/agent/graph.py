@@ -1,4 +1,5 @@
 """LangGraph workflow for insurance underwriting agent."""
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Any
@@ -321,25 +322,23 @@ class InsuranceUnderwritingAgent:
         try:
             logger.info("Performing LLM reasoning")
 
-            # Prepare context for LLM
-            context = self._prepare_llm_context(state)
+            llm_payload = self._build_llm_payload(state)
 
             # If a SageMaker endpoint is configured, invoke it for reasoning
             llm_insight = None
             if settings.sagemaker_endpoint_name:
-                payload = {
-                    "input": context,
-                    "premium": state.premium_calculation
-                }
                 model_response = self.sagemaker_client.invoke_text_model(
                     endpoint_name=settings.sagemaker_endpoint_name,
-                    payload=str(payload)
+                    payload=json.dumps(llm_payload)
                 )
                 if model_response:
                     llm_insight = model_response
 
             if llm_insight is None:
-                llm_insight = self._simulate_llm_reasoning(context, state.premium_calculation)
+                llm_insight = self._simulate_llm_reasoning(
+                    llm_payload['messages'][-1]['content'],
+                    state.premium_calculation
+                )
 
             # Update premium calculation with LLM insights
             if state.premium_calculation:
@@ -352,6 +351,31 @@ class InsuranceUnderwritingAgent:
             state.errors.append(f"LLM reasoning error: {str(e)}")
 
         return state
+
+    def _build_llm_payload(self, state: UnderwritingState) -> Dict[str, Any]:
+        """Build structured LLM payload using system instruction and user context."""
+        context = self._prepare_llm_context(state)
+        messages = [
+            {
+                "role": "system",
+                "content": settings.llm_system_prompt
+            },
+            {
+                "role": "user",
+                "content": context
+            }
+        ]
+
+        payload = {
+            "messages": messages,
+            "premium": state.premium_calculation,
+            "metadata": {
+                "applicant_id": state.applicant_id,
+                "company_name": state.company_name
+            }
+        }
+
+        return payload
 
     def _check_data_completeness(self, state: UnderwritingState) -> str:
         """Check if critical data fields are populated; loop back to web search if incomplete."""
