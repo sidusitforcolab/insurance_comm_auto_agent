@@ -18,6 +18,60 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - insurance_network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: insurance_agent_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/insurance_agent
+      AWS_REGION: us-east-1
+      LOG_LEVEL: INFO
+      DEBUG: "False"
+      PROMETHEUS_ENABLED: "True"
+      LANGSMITH_PROJECT: insurance-agent
+      # Optional: add these from your .env
+      # AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      # AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # BING_API_KEY: ${BING_API_KEY}
+      # SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    networks:
+      - insurance_network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: insurance_agent_prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    depends_on:
+      - app
+    networks:
+      - insurance_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  prometheus_data:
+
+networks:
+  insurance_network:
+    driver: bridge
